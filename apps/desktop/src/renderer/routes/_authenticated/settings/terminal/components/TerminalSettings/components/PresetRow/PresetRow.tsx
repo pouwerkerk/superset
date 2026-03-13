@@ -82,6 +82,7 @@ export function PresetRow({
 					? "Single tab + panes"
 					: "Split pane";
 	const commandsToShow = preset.commands.length > 0 ? preset.commands : [""];
+	const isPinned = preset.pinnedToBar !== false;
 
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: div needed to avoid invalid nested <button> elements
@@ -153,18 +154,15 @@ export function PresetRow({
 					className="p-1 rounded hover:bg-accent/50 transition-colors"
 					onClick={(e) => {
 						e.stopPropagation();
-						const isPinned = preset.pinnedToBar !== false;
 						onTogglePin(preset.id, !isPinned);
 					}}
-					title={preset.pinnedToBar !== false ? "Unpin from bar" : "Pin to bar"}
-					aria-label={
-						preset.pinnedToBar !== false ? "Unpin from bar" : "Pin to bar"
-					}
-					aria-pressed={preset.pinnedToBar !== false}
+					title={isPinned ? "Unpin from bar" : "Pin to bar"}
+					aria-label={isPinned ? "Unpin from bar" : "Pin to bar"}
+					aria-pressed={isPinned}
 				>
 					<LuPin
 						className={`size-3.5 ${
-							preset.pinnedToBar !== false
+							isPinned
 								? "text-foreground"
 								: "text-muted-foreground/40"
 						}`}
