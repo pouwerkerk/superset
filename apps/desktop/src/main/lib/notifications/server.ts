@@ -171,6 +171,59 @@ app.get("/auth/callback", async (req, res) => {
 </body></html>`);
 });
 
+// Terminal launch endpoint for external orchestration
+app.post("/terminal/launch", async (req, res) => {
+	const { command, cwd, name, workspaceId, env: extraEnv } = req.body;
+
+	if (!command || !cwd) {
+		return res.status(400).json({
+			error: "missing_fields",
+			message: "command and cwd are required",
+		});
+	}
+
+	const mainWindow = BrowserWindow.getAllWindows()[0];
+	if (!mainWindow) {
+		return res.status(500).json({
+			error: "no_window",
+			message: "No Superset window available",
+		});
+	}
+
+	try {
+		const requestJson = JSON.stringify({
+			command,
+			cwd,
+			name,
+			workspaceId,
+			env: extraEnv,
+		});
+
+		const result = await mainWindow.webContents.executeJavaScript(
+			`window.__launchTerminal(${requestJson})`,
+		);
+
+		if (!result || !result.paneId) {
+			return res.status(500).json({
+				error: "launch_failed",
+				message: "Terminal launch bridge returned invalid result",
+			});
+		}
+
+		return res.status(201).json({
+			paneId: result.paneId,
+			tabId: result.tabId,
+			workspaceId: result.workspaceId,
+		});
+	} catch (err) {
+		console.error("[notifications] terminal launch failed:", err);
+		return res.status(500).json({
+			error: "launch_failed",
+			message: String(err),
+		});
+	}
+});
+
 // 404
 app.use((_req, res) => {
 	res.status(404).json({ error: "Not found" });

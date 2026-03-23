@@ -2,6 +2,10 @@ import { initSentry } from "./lib/sentry";
 
 initSentry();
 
+import { setupTerminalLaunchBridge } from "./lib/terminal-launch-bridge";
+
+setupTerminalLaunchBridge();
+
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import ReactDom from "react-dom/client";
 import { BootErrorBoundary } from "./components/BootErrorBoundary";
