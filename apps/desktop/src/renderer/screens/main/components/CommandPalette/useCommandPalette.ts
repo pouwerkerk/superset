@@ -16,11 +16,18 @@ const SEARCH_LIMIT = 50;
 interface UseCommandPaletteParams {
 	workspaceId: string;
 	navigate: UseNavigateResult<string>;
+	onSelectFile?: (input: {
+		filePath: string;
+		targetWorkspaceId: string;
+		close: () => void;
+		navigate: UseNavigateResult<string>;
+	}) => void;
 }
 
 export function useCommandPalette({
 	workspaceId,
 	navigate,
+	onSelectFile,
 }: UseCommandPaletteParams) {
 	const [open, setOpen] = useState(false);
 	const [query, setQuery] = useState("");
@@ -105,32 +112,46 @@ export function useCommandPalette({
 
 	// Multi-workspace search
 	const debouncedQuery = useDebouncedValue(query.trim(), 150);
-	const multiSearch = electronTrpc.filesystem.searchFilesMulti.useQuery(
-		{
-			roots,
-			query: debouncedQuery,
-			includePattern,
-			excludePattern,
-			limit: SEARCH_LIMIT,
-		},
-		{
-			enabled:
-				open &&
-				scope === "global" &&
-				roots.length > 0 &&
-				debouncedQuery.length > 0,
-			staleTime: 1000,
-		},
+	const multiSearchQueries = electronTrpc.useQueries((t) =>
+		open && scope === "global" && roots.length > 0 && debouncedQuery.length > 0
+			? roots.map((root) =>
+					t.filesystem.searchFiles({
+						workspaceId: root.workspaceId,
+						query: debouncedQuery,
+						includePattern,
+						excludePattern,
+						limit: SEARCH_LIMIT,
+					}),
+				)
+			: [],
+	);
+
+	const multiSearchResults = useMemo(
+		() =>
+			roots
+				.flatMap((root, index) =>
+					(multiSearchQueries[index]?.data?.matches ?? []).map((match) => ({
+						id: match.absolutePath,
+						name: match.name,
+						path: match.absolutePath,
+						relativePath: match.relativePath,
+						isDirectory: match.kind === "directory",
+						score: match.score,
+						workspaceId: root.workspaceId,
+						workspaceName: root.workspaceName,
+					})),
+				)
+				.sort((left, right) => right.score - left.score)
+				.slice(0, SEARCH_LIMIT),
+		[roots, multiSearchQueries],
 	);
 
 	const searchResults =
-		scope === "workspace"
-			? singleSearch.searchResults
-			: (multiSearch.data ?? []);
+		scope === "workspace" ? singleSearch.searchResults : multiSearchResults;
 	const isFetching =
 		scope === "workspace"
 			? singleSearch.isFetching
-			: multiSearch.isFetching ||
+			: multiSearchQueries.some((query) => query.isFetching) ||
 				(query.trim().length > 0 && query.trim() !== debouncedQuery);
 
 	const handleOpenChange = useCallback((nextOpen: boolean) => {
@@ -152,13 +173,22 @@ export function useCommandPalette({
 	const selectFile = useCallback(
 		(filePath: string, resultWorkspaceId?: string) => {
 			const targetWs = resultWorkspaceId ?? workspaceId;
+			if (onSelectFile) {
+				onSelectFile({
+					filePath,
+					targetWorkspaceId: targetWs,
+					close: () => handleOpenChange(false),
+					navigate,
+				});
+				return;
+			}
 			useTabsStore.getState().addFileViewerPane(targetWs, { filePath });
 			handleOpenChange(false);
 			if (targetWs !== workspaceId) {
 				navigateToWorkspace(targetWs, navigate);
 			}
 		},
-		[workspaceId, handleOpenChange, navigate],
+		[workspaceId, onSelectFile, handleOpenChange, navigate],
 	);
 
 	const setIncludePattern = useCallback(

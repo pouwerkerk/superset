@@ -4,6 +4,10 @@ import { useEffect, useRef } from "react";
 import { useDrag, useDrop } from "react-dnd";
 import { LuGripVertical, LuPin } from "react-icons/lu";
 import type { TerminalPreset } from "renderer/routes/_authenticated/settings/presets/types";
+import {
+	getPresetProjectTargetLabel,
+	type PresetProjectOption,
+} from "../PresetsSection/preset-project-options";
 
 const PRESET_TYPE = "TERMINAL_PRESET";
 
@@ -11,6 +15,7 @@ interface PresetRowProps {
 	preset: TerminalPreset;
 	rowIndex: number;
 	isEven: boolean;
+	projectOptionsById: ReadonlyMap<string, PresetProjectOption>;
 	onEdit: (presetId: string) => void;
 	onLocalReorder: (fromIndex: number, toIndex: number) => void;
 	onPersistReorder: (presetId: string, targetIndex: number) => void;
@@ -21,6 +26,7 @@ export function PresetRow({
 	preset,
 	rowIndex,
 	isEven,
+	projectOptionsById,
 	onEdit,
 	onLocalReorder,
 	onPersistReorder,
@@ -60,14 +66,8 @@ export function PresetRow({
 		drag(dragHandleRef);
 	}, [preview, drop, drag]);
 
-	const isWorkspaceCreation = !!(
-		preset.applyOnWorkspaceCreated ||
-		(!preset.applyOnNewTab && preset.isDefault)
-	);
-	const isNewTab = !!(
-		preset.applyOnNewTab ||
-		(!preset.applyOnWorkspaceCreated && preset.isDefault)
-	);
+	const isWorkspaceCreation = !!preset.applyOnWorkspaceCreated;
+	const isNewTab = !!preset.applyOnNewTab;
 	const modeValue = normalizeExecutionMode(preset.executionMode);
 	const modeLabel =
 		modeValue === "new-tab"
@@ -82,7 +82,10 @@ export function PresetRow({
 					? "Single tab + panes"
 					: "Split pane";
 	const commandsToShow = preset.commands.length > 0 ? preset.commands : [""];
-	const isPinned = preset.pinnedToBar !== false;
+	const appliesToLabel = getPresetProjectTargetLabel(
+		preset.projectIds,
+		projectOptionsById,
+	);
 
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: div needed to avoid invalid nested <button> elements
@@ -131,6 +134,12 @@ export function PresetRow({
 				))}
 			</div>
 
+			<div className="w-40 shrink-0 pt-0.5">
+				<Badge variant="outline" className="max-w-full truncate">
+					{appliesToLabel}
+				</Badge>
+			</div>
+
 			<div className="w-32 shrink-0 pt-0.5">
 				<span className="text-xs text-muted-foreground">{modeLabel}</span>
 			</div>
@@ -154,15 +163,18 @@ export function PresetRow({
 					className="p-1 rounded hover:bg-accent/50 transition-colors"
 					onClick={(e) => {
 						e.stopPropagation();
+						const isPinned = preset.pinnedToBar !== false;
 						onTogglePin(preset.id, !isPinned);
 					}}
-					title={isPinned ? "Unpin from bar" : "Pin to bar"}
-					aria-label={isPinned ? "Unpin from bar" : "Pin to bar"}
-					aria-pressed={isPinned}
+					title={preset.pinnedToBar !== false ? "Unpin from bar" : "Pin to bar"}
+					aria-label={
+						preset.pinnedToBar !== false ? "Unpin from bar" : "Pin to bar"
+					}
+					aria-pressed={preset.pinnedToBar !== false}
 				>
 					<LuPin
 						className={`size-3.5 ${
-							isPinned
+							preset.pinnedToBar !== false
 								? "text-foreground"
 								: "text-muted-foreground/40"
 						}`}

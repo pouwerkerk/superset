@@ -23,23 +23,22 @@ import {
 import { toast } from "@superset/ui/sonner";
 import { Switch } from "@superset/ui/switch";
 import { cn } from "@superset/ui/utils";
+import { useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	HiOutlineCog6Tooth,
+	HiOutlineCommandLine,
 	HiOutlineFolderOpen,
 	HiOutlinePaintBrush,
 } from "react-icons/hi2";
 import { LuImagePlus, LuTrash2 } from "react-icons/lu";
+import { ColorSelector } from "renderer/components/ColorSelector";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import {
 	useImportAllWorktrees,
 	useOpenExternalWorktree,
 } from "renderer/react-query/workspaces";
-import {
-	PROJECT_COLOR_DEFAULT,
-	PROJECT_COLORS,
-} from "shared/constants/project-colors";
 import { resolveBranchPrefix, sanitizeSegment } from "shared/utils/branch";
 import { ClickablePath } from "../../../../components/ClickablePath";
 import {
@@ -52,6 +51,7 @@ import {
 	isItemVisible,
 	SETTING_ITEM_ID,
 } from "../../../../utils/settings-search";
+import { ProjectSettingsHeader } from "../ProjectSettingsHeader";
 import { ScriptsEditor } from "./components/ScriptsEditor";
 
 const REPO_DEFAULT_BASE_BRANCH = "__repo_default__";
@@ -92,6 +92,7 @@ export function ProjectSettings({
 	projectId,
 	visibleItems,
 }: ProjectSettingsProps) {
+	const navigate = useNavigate();
 	const utils = electronTrpc.useUtils();
 	const { data: project } = electronTrpc.projects.get.useQuery({
 		id: projectId,
@@ -142,7 +143,9 @@ export function ProjectSettings({
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
 	const handleIconUpload = useCallback(() => {
-		fileInputRef.current?.click();
+		if (!fileInputRef.current) return;
+		fileInputRef.current.value = "";
+		fileInputRef.current.click();
 	}, []);
 
 	const handleFileChange = useCallback(
@@ -291,10 +294,9 @@ export function ProjectSettings({
 
 	return (
 		<div className="p-6 max-w-4xl w-full select-text">
-			<div className="mb-8">
-				<h2 className="text-xl font-semibold">{project.name}</h2>
+			<ProjectSettingsHeader title={project.name}>
 				<ClickablePath path={project.mainRepoPath} />
-			</div>
+			</ProjectSettingsHeader>
 
 			<div className="space-y-4">
 				<SettingsSection
@@ -524,6 +526,46 @@ export function ProjectSettings({
 						)}
 				</SettingsSection>
 
+				<SettingsSection
+					icon={<HiOutlineCommandLine className="h-4 w-4" />}
+					title="Terminal Presets"
+					description="Create repo-specific terminal presets without leaving settings."
+				>
+					<div className="flex items-center justify-between gap-4">
+						<div className="space-y-0.5">
+							<Label className="text-sm font-medium">Project Presets</Label>
+							<p className="text-xs text-muted-foreground">
+								New presets can be limited to this project or expanded later to
+								multiple projects.
+							</p>
+						</div>
+						<div className="flex items-center gap-2">
+							<Button
+								type="button"
+								variant="outline"
+								onClick={() =>
+									navigate({
+										to: "/settings/terminal",
+									})
+								}
+							>
+								Manage Presets
+							</Button>
+							<Button
+								type="button"
+								onClick={() =>
+									navigate({
+										to: "/settings/terminal",
+										search: { createProjectId: projectId },
+									})
+								}
+							>
+								New Preset for This Project
+							</Button>
+						</div>
+					</div>
+				</SettingsSection>
+
 				<div className="pt-3 border-t">
 					<ScriptsEditor projectId={project.id} />
 				</div>
@@ -533,36 +575,17 @@ export function ProjectSettings({
 					title="Appearance"
 					description="Customize this project's sidebar look."
 				>
-					<div className="flex items-center justify-between">
-						<div className="flex items-center gap-2">
-							{PROJECT_COLORS.map((color) => {
-								const isDefault = color.value === PROJECT_COLOR_DEFAULT;
-								const isSelected = project.color === color.value;
-								return (
-									<button
-										key={color.value}
-										type="button"
-										title={color.name}
-										onClick={() =>
-											updateProject.mutate({
-												id: projectId,
-												patch: { color: color.value },
-											})
-										}
-										className={cn(
-											"size-6 rounded-full border-2 transition-transform hover:scale-110",
-											isSelected
-												? "border-foreground scale-110"
-												: "border-transparent",
-											isDefault && "bg-muted",
-										)}
-										style={
-											isDefault ? undefined : { backgroundColor: color.value }
-										}
-									/>
-								);
-							})}
-						</div>
+					<div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+						<ColorSelector
+							selectedColor={project.color}
+							onSelectColor={(color) =>
+								updateProject.mutate({
+									id: projectId,
+									patch: { color },
+								})
+							}
+							className="max-w-xl"
+						/>
 						<div className="flex items-center gap-2">
 							<Label className="text-sm text-muted-foreground">
 								Hide Image

@@ -1,72 +1,90 @@
-import { type MutableRefObject, useCallback, useRef } from "react";
+import { useCallback } from "react";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { invalidateFileSaveQueries } from "renderer/lib/invalidate-file-save-queries";
+import type { EditorSaveResult } from "renderer/stores/editor-state/types";
 import { useTabsStore } from "renderer/stores/tabs/store";
 import type { ChangeCategory } from "shared/changes-types";
-import type { CodeEditorAdapter } from "../../../../../components";
+
+const MAX_FILE_SIZE = 2 * 1024 * 1024;
 
 interface UseFileSaveParams {
-	worktreePath: string;
+	workspaceId?: string;
 	filePath: string;
 	paneId: string;
 	diffCategory?: ChangeCategory;
-	editorRef: MutableRefObject<CodeEditorAdapter | null>;
-	originalContentRef: MutableRefObject<string>;
-	originalDiffContentRef: MutableRefObject<string>;
-	draftContentRef: MutableRefObject<string | null>;
-	setIsDirty: (dirty: boolean) => void;
+	getCurrentContent: () => string;
+	getRevision: () => string | null;
+	onSaveSuccess: (input: {
+		savedContent: string;
+		currentContent: string;
+		revision: string;
+	}) => void;
 }
 
 export function useFileSave({
-	worktreePath,
+	workspaceId,
 	filePath,
 	paneId,
 	diffCategory,
-	editorRef,
-	originalContentRef,
-	originalDiffContentRef,
-	draftContentRef,
-	setIsDirty,
+	getCurrentContent,
+	getRevision,
+	onSaveSuccess,
 }: UseFileSaveParams) {
-	const savingFromRawRef = useRef(false);
 	const utils = electronTrpc.useUtils();
 
-	const saveFileMutation = electronTrpc.changes.saveFile.useMutation({
-		onSuccess: (result, variables) => {
-			if (result.status !== "saved") {
-				savingFromRawRef.current = false;
-				return;
+	const writeFileMutation = electronTrpc.filesystem.writeFile.useMutation();
+
+	const handleSaveFile = useCallback(
+		async (options?: {
+			force?: boolean;
+		}): Promise<EditorSaveResult | undefined> => {
+			if (!filePath || !workspaceId) return;
+
+			const content = getCurrentContent();
+			const precondition =
+				options?.force || !getRevision()
+					? undefined
+					: { ifMatch: getRevision() as string };
+
+			const result = await writeFileMutation.mutateAsync({
+				workspaceId,
+				absolutePath: filePath,
+				content,
+				encoding: "utf-8",
+				precondition,
+			});
+
+			if (!result.ok) {
+				if (result.reason === "conflict") {
+					try {
+						const currentFile = await utils.filesystem.readFile.fetch({
+							workspaceId,
+							absolutePath: filePath,
+							encoding: "utf-8",
+							maxBytes: MAX_FILE_SIZE,
+						});
+						return {
+							status: "conflict" as const,
+							currentContent: (currentFile.content as string) ?? null,
+						};
+					} catch {
+						return { status: "conflict" as const, currentContent: null };
+					}
+				}
+				return undefined;
 			}
 
-			const savedContent = variables.content;
-			const currentEditorValue = editorRef.current?.getValue() ?? savedContent;
-			const hasUnsavedChanges = currentEditorValue !== savedContent;
+			const currentContent = getCurrentContent();
+			onSaveSuccess({
+				savedContent: content,
+				currentContent,
+				revision: result.revision,
+			});
 
-			utils.changes.readWorkingFile.setData(
-				{
-					worktreePath: variables.worktreePath,
-					absolutePath: variables.absolutePath,
-				},
-				{
-					ok: true,
-					content: savedContent,
-					truncated: false,
-					byteLength: new TextEncoder().encode(savedContent).length,
-				},
-			);
-
-			originalContentRef.current = savedContent;
-			setIsDirty(hasUnsavedChanges);
-			if (savingFromRawRef.current && !hasUnsavedChanges) {
-				draftContentRef.current = null;
-			} else if (hasUnsavedChanges) {
-				draftContentRef.current = currentEditorValue;
-			}
-			savingFromRawRef.current = false;
-			originalDiffContentRef.current = "";
-
-			void utils.changes.readWorkingFile.invalidate();
-			utils.changes.getFileContents.invalidate();
-			utils.changes.getStatus.invalidate();
+			invalidateFileSaveQueries({
+				workspaceId,
+				filePath,
+			});
 
 			if (diffCategory === "staged") {
 				const panes = useTabsStore.getState().panes;
@@ -86,27 +104,24 @@ export function useFileSave({
 					});
 				}
 			}
-		},
-	});
 
-	const handleSaveRaw = useCallback(
-		async (options?: { force?: boolean }) => {
-			if (!editorRef.current || !filePath || !worktreePath) return;
-			savingFromRawRef.current = true;
-			return saveFileMutation.mutateAsync({
-				worktreePath,
-				absolutePath: filePath,
-				content: editorRef.current.getValue(),
-				expectedContent: options?.force
-					? undefined
-					: originalContentRef.current,
-			});
+			return { status: "saved" as const };
 		},
-		[filePath, worktreePath, saveFileMutation, editorRef, originalContentRef],
+		[
+			diffCategory,
+			filePath,
+			getCurrentContent,
+			getRevision,
+			onSaveSuccess,
+			paneId,
+			utils,
+			workspaceId,
+			writeFileMutation,
+		],
 	);
 
 	return {
-		handleSaveRaw,
-		isSaving: saveFileMutation.isPending,
+		handleSaveFile,
+		isSaving: writeFileMutation.isPending,
 	};
 }

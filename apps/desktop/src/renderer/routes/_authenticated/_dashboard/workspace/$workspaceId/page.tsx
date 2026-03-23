@@ -1,5 +1,7 @@
+import type { ExternalApp } from "@superset/local-db";
 import { createFileRoute, notFound, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo } from "react";
+import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
 import { useFileOpenMode } from "renderer/hooks/useFileOpenMode";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { getWorkspaceDisplayName } from "renderer/lib/getWorkspaceDisplayName";
@@ -8,6 +10,7 @@ import { usePresets } from "renderer/react-query/presets";
 import type { WorkspaceSearchParams } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { navigateToWorkspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { usePresetHotkeys } from "renderer/routes/_authenticated/_dashboard/workspace/$workspaceId/hooks/usePresetHotkeys";
+import { useWorkspaceRunCommand } from "renderer/routes/_authenticated/_dashboard/workspace/$workspaceId/hooks/useWorkspaceRunCommand";
 import { NotFound } from "renderer/routes/not-found";
 import {
 	CommandPalette,
@@ -17,11 +20,20 @@ import {
 	KeywordSearch,
 	useKeywordSearch,
 } from "renderer/screens/main/components/KeywordSearch";
+import { UnsavedChangesDialog } from "renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/TabView/FileViewerPane/UnsavedChangesDialog";
 import { useWorkspaceFileEventBridge } from "renderer/screens/main/components/WorkspaceView/hooks/useWorkspaceFileEvents";
 import { useWorkspaceRenameReconciliation } from "renderer/screens/main/components/WorkspaceView/hooks/useWorkspaceRenameReconciliation";
 import { WorkspaceInitializingView } from "renderer/screens/main/components/WorkspaceView/WorkspaceInitializingView";
 import { WorkspaceLayout } from "renderer/screens/main/components/WorkspaceView/WorkspaceLayout";
 import { useCreateOrOpenPR, usePRStatus } from "renderer/screens/main/hooks";
+import {
+	cancelPendingTabClose,
+	discardAndClosePendingTab,
+	requestPaneClose,
+	requestTabClose,
+	saveAndClosePendingTab,
+} from "renderer/stores/editor-state/editorCoordinator";
+import { useEditorSessionsStore } from "renderer/stores/editor-state/useEditorSessionsStore";
 import { useAppHotkey } from "renderer/stores/hotkeys";
 import { SidebarMode, useSidebarStore } from "renderer/stores/sidebar-state";
 import { getPaneDimensions } from "renderer/stores/tabs/pane-refs";
@@ -79,7 +91,11 @@ function WorkspacePage() {
 	const { data: workspace } = electronTrpc.workspaces.get.useQuery({
 		id: workspaceId,
 	});
-	useWorkspaceFileEventBridge(workspaceId, Boolean(workspace?.worktreePath));
+	useWorkspaceFileEventBridge(
+		workspaceId,
+		workspace?.worktreePath,
+		Boolean(workspace?.worktreePath),
+	);
 	useWorkspaceRenameReconciliation({
 		workspaceId,
 		worktreePath: workspace?.worktreePath,
@@ -140,13 +156,11 @@ function WorkspacePage() {
 		splitPaneVertical,
 		splitPaneHorizontal,
 		openPreset,
-	} = useTabsWithPresets();
-	const addChatMastraTab = useTabsStore((s) => s.addChatMastraTab);
+	} = useTabsWithPresets(workspace?.projectId);
+	const addChatTab = useTabsStore((s) => s.addChatTab);
 	const reopenClosedTab = useTabsStore((s) => s.reopenClosedTab);
 	const addBrowserTab = useTabsStore((s) => s.addBrowserTab);
 	const setActiveTab = useTabsStore((s) => s.setActiveTab);
-	const removeTab = useTabsStore((s) => s.removeTab);
-	const removePane = useTabsStore((s) => s.removePane);
 	const setFocusedPane = useTabsStore((s) => s.setFocusedPane);
 	const toggleSidebar = useSidebarStore((s) => s.toggleSidebar);
 	const isSidebarOpen = useSidebarStore((s) => s.isSidebarOpen);
@@ -176,8 +190,16 @@ function WorkspacePage() {
 	const focusedPaneId = useTabsStore((s) =>
 		activeTabId ? (s.focusedPaneIds[activeTabId] ?? null) : null,
 	);
+	const pendingTabClose = useEditorSessionsStore((s) =>
+		s.pendingTabClose?.workspaceId === workspaceId ? s.pendingTabClose : null,
+	);
 
-	const { presets } = usePresets();
+	const { toggleWorkspaceRun } = useWorkspaceRunCommand({
+		workspaceId,
+		worktreePath: workspace?.worktreePath,
+	});
+
+	const { matchedPresets: presets } = usePresets(workspace?.projectId);
 
 	const openTabWithPreset = useCallback(
 		(presetIndex: number) => {
@@ -195,19 +217,19 @@ function WorkspacePage() {
 		workspaceId,
 		addTab,
 	]);
-	useAppHotkey("NEW_CHAT", () => addChatMastraTab(workspaceId), undefined, [
+	useAppHotkey("NEW_CHAT", () => addChatTab(workspaceId), undefined, [
 		workspaceId,
-		addChatMastraTab,
+		addChatTab,
 	]);
 	useAppHotkey(
 		"REOPEN_TAB",
 		() => {
 			if (!reopenClosedTab(workspaceId)) {
-				addChatMastraTab(workspaceId);
+				addChatTab(workspaceId);
 			}
 		},
 		undefined,
-		[workspaceId, reopenClosedTab, addChatMastraTab],
+		[workspaceId, reopenClosedTab, addChatTab],
 	);
 	useAppHotkey("NEW_BROWSER", () => addBrowserTab(workspaceId), undefined, [
 		workspaceId,
@@ -215,25 +237,29 @@ function WorkspacePage() {
 	]);
 	usePresetHotkeys(openTabWithPreset);
 
+	useAppHotkey("RUN_WORKSPACE_COMMAND", () => toggleWorkspaceRun(), undefined, [
+		toggleWorkspaceRun,
+	]);
+
 	useAppHotkey(
 		"CLOSE_TERMINAL",
 		() => {
 			if (focusedPaneId) {
-				removePane(focusedPaneId);
+				requestPaneClose(focusedPaneId);
 			}
 		},
 		undefined,
-		[focusedPaneId, removePane],
+		[focusedPaneId],
 	);
 	useAppHotkey(
 		"CLOSE_TAB",
 		() => {
 			if (activeTabId) {
-				removeTab(activeTabId);
+				requestTabClose(activeTabId);
 			}
 		},
 		undefined,
-		[activeTabId, removeTab],
+		[activeTabId],
 	);
 
 	useAppHotkey(
@@ -338,6 +364,7 @@ function WorkspacePage() {
 		{ projectId: projectId as string },
 		{ enabled: !!projectId },
 	);
+	const resolvedDefaultApp: ExternalApp = defaultApp ?? "cursor";
 	const utils = electronTrpc.useUtils();
 	const { mutate: mutateOpenInApp } =
 		electronTrpc.external.openInApp.useMutation({
@@ -348,23 +375,23 @@ function WorkspacePage() {
 			},
 		});
 	const handleOpenInApp = useCallback(() => {
-		if (workspace?.worktreePath && defaultApp) {
+		if (workspace?.worktreePath) {
 			mutateOpenInApp({
 				path: workspace.worktreePath,
-				app: defaultApp,
+				app: resolvedDefaultApp,
 				projectId,
 			});
 		}
-	}, [workspace?.worktreePath, defaultApp, mutateOpenInApp, projectId]);
+	}, [workspace?.worktreePath, resolvedDefaultApp, mutateOpenInApp, projectId]);
 	useAppHotkey("OPEN_IN_APP", handleOpenInApp, undefined, [handleOpenInApp]);
 
 	// Copy path shortcut
-	const copyPath = electronTrpc.external.copyPath.useMutation();
+	const { copyToClipboard } = useCopyToClipboard();
 	useAppHotkey(
 		"COPY_PATH",
 		() => {
 			if (workspace?.worktreePath) {
-				copyPath.mutate(workspace.worktreePath);
+				copyToClipboard(workspace.worktreePath);
 			}
 		},
 		undefined,
@@ -522,7 +549,7 @@ function WorkspacePage() {
 				);
 				if (!target) return;
 				splitPaneVertical(activeTabId, target.paneId, target.path, {
-					paneType: "chat-mastra",
+					paneType: "chat",
 				});
 			}
 		},
@@ -619,7 +646,7 @@ function WorkspacePage() {
 					/>
 				) : (
 					<WorkspaceLayout
-						defaultExternalApp={defaultApp}
+						defaultExternalApp={resolvedDefaultApp}
 						onOpenInApp={handleOpenInApp}
 						onOpenQuickOpen={handleQuickOpen}
 					/>
@@ -665,6 +692,36 @@ function WorkspacePage() {
 				isLoading={keywordSearch.isFetching}
 				searchResults={keywordSearch.searchResults}
 				onSelectMatch={keywordSearch.selectMatch}
+			/>
+			<UnsavedChangesDialog
+				open={pendingTabClose !== null}
+				onOpenChange={(open) => {
+					if (!open) {
+						cancelPendingTabClose(workspaceId);
+					}
+				}}
+				onSave={() => {
+					void saveAndClosePendingTab(workspaceId).catch((error) => {
+						console.error(
+							"[WorkspacePage] Failed to save dirty files before closing tab",
+							{
+								workspaceId,
+								error,
+							},
+						);
+					});
+				}}
+				onDiscard={() => discardAndClosePendingTab(workspaceId)}
+				isSaving={pendingTabClose?.isSaving ?? false}
+				description={
+					pendingTabClose
+						? pendingTabClose.documentKeys.length === 1
+							? "This tab has unsaved changes in 1 file. What would you like to do before closing it?"
+							: `This tab has unsaved changes in ${pendingTabClose.documentKeys.length} files. What would you like to do before closing it?`
+						: undefined
+				}
+				discardLabel="Discard & Close Tab"
+				saveLabel="Save & Close Tab"
 			/>
 		</div>
 	);

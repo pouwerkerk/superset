@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { SmallModelAttempt } from "lib/ai/call-small-model";
 
 const callSmallModelMock = mock((async () => ({
@@ -35,7 +35,7 @@ mock.module("lib/ai/call-small-model", () => ({
 	callSmallModel: callSmallModelMock,
 }));
 
-mock.module("@superset/chat/host", () => ({
+mock.module("@superset/chat/server/desktop", () => ({
 	__esModule: true,
 	generateTitleFromMessage: generateTitleFromMessageMock,
 	generateTitleFromMessageWithStreamingModel:
@@ -213,6 +213,10 @@ describe("generateWorkspaceNameFromPrompt", () => {
 			usedPromptFallback: false,
 		});
 	});
+});
+
+afterAll(() => {
+	mock.restore();
 });
 
 describe("attemptWorkspaceAutoRenameFromPrompt", () => {

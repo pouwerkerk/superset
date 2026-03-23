@@ -9,20 +9,24 @@ import {
 } from "react-mosaic-component";
 import { dragDropManager } from "renderer/lib/dnd";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { requestPaneClose } from "renderer/stores/editor-state/editorCoordinator";
 import { useTabsStore } from "renderer/stores/tabs/store";
 import type { Tab } from "renderer/stores/tabs/types";
 import { useTabsWithPresets } from "renderer/stores/tabs/useTabsWithPresets";
 import {
 	cleanLayout,
 	extractPaneIdsFromLayout,
+	getPaneIdSetForTab,
 } from "renderer/stores/tabs/utils";
 import { useTheme } from "renderer/stores/theme";
 import { BrowserPane } from "./BrowserPane";
-import { ChatMastraPane } from "./ChatMastraPane";
+import { ChatPane } from "./ChatPane";
 import { MosaicSplitOverlay } from "./components";
 import { DevToolsPane } from "./DevToolsPane";
 import { FileViewerPane } from "./FileViewerPane";
 import { TabPane } from "./TabPane";
+
+export const MOSAIC_ID = "superset-mosaic";
 
 interface TabViewProps {
 	tab: Tab;
@@ -33,8 +37,6 @@ export function TabView({ tab }: TabViewProps) {
 	const updateTabLayout = useTabsStore((s) => s.updateTabLayout);
 	const removePane = useTabsStore((s) => s.removePane);
 	const removeTab = useTabsStore((s) => s.removeTab);
-	const { splitPaneAuto, splitPaneHorizontal, splitPaneVertical } =
-		useTabsWithPresets();
 	const setFocusedPane = useTabsStore((s) => s.setFocusedPane);
 	const movePaneToTab = useTabsStore((s) => s.movePaneToTab);
 	const movePaneToNewTab = useTabsStore((s) => s.movePaneToNewTab);
@@ -46,6 +48,8 @@ export function TabView({ tab }: TabViewProps) {
 		{ id: tab.workspaceId },
 		{ enabled: !!tab.workspaceId },
 	);
+	const { splitPaneAuto, splitPaneHorizontal, splitPaneVertical } =
+		useTabsWithPresets(workspace?.projectId);
 	const worktreePath = workspace?.worktreePath ?? "";
 
 	// Get tabs in the same workspace for move targets
@@ -107,11 +111,30 @@ export function TabView({ tab }: TabViewProps) {
 			const freshTab = state.tabs.find((t) => t.id === tab.id);
 			const freshPanes = state.panes;
 
+			// Strip panes from the layout that no longer belong to this tab.
+			// This prevents Mosaic's drag-end "reset" from re-adding panes that
+			// were moved to another tab (e.g., via movePaneToNewTab).
+			const ownPaneIds = getPaneIdSetForTab(freshPanes, tab.id);
+			const sanitizedLayout = cleanLayout(newLayout, ownPaneIds);
+			if (!sanitizedLayout) return;
+
+			if (
+				process.env.NODE_ENV === "development" &&
+				sanitizedLayout !== newLayout
+			) {
+				console.warn(
+					"[TabView] Sanitized foreign panes from layout:",
+					extractPaneIdsFromLayout(newLayout).filter(
+						(id) => !ownPaneIds.has(id),
+					),
+				);
+			}
+
 			// Use fresh tab layout to determine what panes were removed
 			const oldPaneIds = extractPaneIdsFromLayout(
-				freshTab?.layout ?? newLayout,
+				freshTab?.layout ?? sanitizedLayout,
 			);
-			const newPaneIds = extractPaneIdsFromLayout(newLayout);
+			const newPaneIds = extractPaneIdsFromLayout(sanitizedLayout);
 
 			// Find removed panes (e.g., from Mosaic close button)
 			const removedPaneIds = oldPaneIds.filter(
@@ -119,16 +142,18 @@ export function TabView({ tab }: TabViewProps) {
 			);
 
 			// Remove panes that were removed via Mosaic UI
-			// But skip panes that were moved to another tab (their tabId changed)
 			for (const removedId of removedPaneIds) {
 				const pane = freshPanes[removedId];
-				// Only remove if pane still belongs to this tab (actual removal, not move)
 				if (pane && pane.tabId === tab.id) {
+					if (pane.type === "file-viewer") {
+						requestPaneClose(removedId);
+						return;
+					}
 					removePane(removedId);
 				}
 			}
 
-			updateTabLayout(tab.id, newLayout);
+			updateTabLayout(tab.id, sanitizedLayout);
 		},
 		[tab.id, updateTabLayout, removePane],
 	);
@@ -172,10 +197,10 @@ export function TabView({ tab }: TabViewProps) {
 				);
 			}
 
-			// Route chat panes to ChatMastraPane component
-			if (paneInfo.type === "chat-mastra") {
+			// Route chat panes to ChatPane component
+			if (paneInfo.type === "chat") {
 				return (
-					<ChatMastraPane
+					<ChatPane
 						paneId={paneId}
 						path={path}
 						tabId={tab.id}
@@ -270,6 +295,7 @@ export function TabView({ tab }: TabViewProps) {
 	return (
 		<div className="relative w-full h-full mosaic-container">
 			<Mosaic<string>
+				mosaicId={MOSAIC_ID}
 				renderTile={renderPane}
 				value={cleanedLayout}
 				onChange={handleLayoutChange}

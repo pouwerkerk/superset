@@ -12,7 +12,7 @@ export type PaneType =
 	| "terminal"
 	| "webview"
 	| "file-viewer"
-	| "chat-mastra"
+	| "chat"
 	| "devtools";
 
 /**
@@ -139,23 +139,35 @@ export interface Pane {
 	cwd?: string | null; // Current working directory
 	cwdConfirmed?: boolean; // True if cwd confirmed via OSC-7, false if seeded
 	fileViewer?: FileViewerState; // For file-viewer panes
-	chatMastra?: ChatMastraPaneState; // For Mastra chat panes
+	chat?: ChatPaneState; // For chat panes
 	browser?: BrowserPaneState; // For browser (webview) panes
 	devtools?: DevToolsPaneState; // For devtools panes
+	workspaceRun?: {
+		workspaceId: string;
+		state: "running" | "stopped-by-user" | "stopped-by-exit";
+		command?: string;
+	};
 }
 
-export interface ChatMastraLaunchConfig {
+export type WorkspaceRunState = NonNullable<Pane["workspaceRun"]>["state"];
+
+export interface ChatLaunchConfig {
 	initialPrompt?: string;
 	draftInput?: string;
+	initialFiles?: Array<{
+		data: string;
+		mediaType: string;
+		filename?: string;
+	}>;
 	metadata?: {
 		model?: string;
 	};
 	retryCount?: number;
 }
 
-export interface ChatMastraPaneState {
+export interface ChatPaneState {
 	sessionId: string | null;
-	launchConfig?: ChatMastraLaunchConfig | null;
+	launchConfig?: ChatLaunchConfig | null;
 }
 
 /**
