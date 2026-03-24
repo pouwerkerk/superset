@@ -1,5 +1,8 @@
 import { electronTrpcClient } from "renderer/lib/trpc-client";
 import { electronQueryClient } from "renderer/providers/ElectronTRPCProvider";
+import { useTabsStore } from "renderer/stores/tabs/store";
+
+// --- Types ---
 
 interface WorkspaceInfo {
 	id: string;
@@ -10,34 +13,72 @@ interface WorkspaceInfo {
 	worktreePath: string;
 }
 
-interface ListWorkspacesResponse {
-	workspaces: WorkspaceInfo[];
-}
-
-interface EnsureWorkspaceRequest {
-	repoPath: string;
+interface CreateWorkspaceRequest {
+	projectPath: string;
 	branch: string;
+	worktreePath?: string;
 	name?: string;
 }
 
-interface EnsureWorkspaceResponse {
+interface CreateWorkspaceResponse {
 	workspaceId: string;
 	projectId: string;
 	projectName: string;
-	created: boolean;
+	status: "ready" | "created";
+}
+
+interface WorkspaceStatusResponse {
+	status: "ready" | "initializing";
+	presets: Array<{ id: string; name: string; commands: string[] }>;
+}
+
+interface RunInWorkspaceRequest {
+	preset: string;
+	prompt?: string;
+	env?: Record<string, string>;
+	cwd?: string;
+}
+
+interface RunInWorkspaceResponse {
+	paneId: string;
+	tabId: string;
+	workspaceId: string;
 }
 
 declare global {
 	interface Window {
-		__listWorkspaces?: () => Promise<ListWorkspacesResponse>;
-		__ensureWorkspace?: (
-			request: EnsureWorkspaceRequest,
-		) => Promise<EnsureWorkspaceResponse>;
+		__listWorkspaces?: () => Promise<{ workspaces: WorkspaceInfo[] }>;
+		__createWorkspace?: (
+			request: CreateWorkspaceRequest,
+		) => Promise<CreateWorkspaceResponse>;
+		__workspaceStatus?: (
+			workspaceId: string,
+		) => Promise<WorkspaceStatusResponse>;
+		__runInWorkspace?: (
+			workspaceId: string,
+			request: RunInWorkspaceRequest,
+		) => Promise<RunInWorkspaceResponse>;
 	}
 }
 
+// --- Helpers ---
+
+async function invalidateSidebar(): Promise<void> {
+	await Promise.all([
+		electronQueryClient.invalidateQueries({
+			queryKey: [["projects", "getRecents"]],
+		}),
+		electronQueryClient.invalidateQueries({
+			queryKey: [["workspaces"]],
+		}),
+	]);
+}
+
+// --- Bridge ---
+
 export function setupWorkspaceBridge(): void {
-	window.__listWorkspaces = async (): Promise<ListWorkspacesResponse> => {
+	// GET /api/workspaces
+	window.__listWorkspaces = async () => {
 		const allWorkspaces =
 			await electronTrpcClient.workspaces.getAll.query();
 		return {
@@ -52,59 +93,46 @@ export function setupWorkspaceBridge(): void {
 		};
 	};
 
-	window.__ensureWorkspace = async (
-		request: EnsureWorkspaceRequest,
-	): Promise<EnsureWorkspaceResponse> => {
-		// Step 1: Ensure project exists via openFromPath
+	// POST /api/workspaces
+	window.__createWorkspace = async (request) => {
+		// Step 1: Ensure project exists
 		const projectResult =
 			await electronTrpcClient.projects.openFromPath.mutate({
-				path: request.repoPath,
+				path: request.projectPath,
 			});
 
 		if (!projectResult.project) {
 			throw new Error(
-				`Failed to create project for ${request.repoPath}`,
+				`Failed to create project for ${request.projectPath}`,
 			);
 		}
 
 		const { id: projectId, name: projectName } = projectResult.project;
 
-		// Activate the project so it appears in the sidebar
-		await electronTrpcClient.projects.activate.mutate({
-			projectId,
-		});
+		// Activate so it appears in sidebar
+		await electronTrpcClient.projects.activate.mutate({ projectId });
 
-		// Invalidate sidebar queries so the project appears immediately
-		await electronQueryClient.invalidateQueries({
-			queryKey: [["projects", "getRecents"]],
-		});
-		await electronQueryClient.invalidateQueries({
-			queryKey: [["workspaces", "getAll"]],
-		});
-		await electronQueryClient.invalidateQueries({
-			queryKey: [["workspaces", "getAllGrouped"]],
-		});
-
-		// Step 2: Check if workspace already exists for this branch
+		// Step 2: Find existing workspace for this branch
 		const allWorkspaces =
 			await electronTrpcClient.workspaces.getAll.query();
 		const existing = allWorkspaces.find(
-			(ws) => ws.projectId === projectId && ws.branch === request.branch,
+			(ws) =>
+				ws.projectId === projectId && ws.branch === request.branch,
 		);
 
 		if (existing) {
+			await invalidateSidebar();
 			return {
 				workspaceId: existing.id,
 				projectId,
 				projectName,
-				created: false,
+				status: "ready",
 			};
 		}
 
-		// Step 3: Create workspace for this branch
+		// Step 3: Create workspace
 		let newWorkspace;
 		try {
-			// Try using existing branch first
 			newWorkspace =
 				await electronTrpcClient.workspaces.create.mutate({
 					projectId,
@@ -113,7 +141,6 @@ export function setupWorkspaceBridge(): void {
 					useExistingBranch: true,
 				});
 		} catch {
-			// Branch doesn't exist yet — create it
 			newWorkspace =
 				await electronTrpcClient.workspaces.create.mutate({
 					projectId,
@@ -123,16 +150,94 @@ export function setupWorkspaceBridge(): void {
 				});
 		}
 
-		// Invalidate workspace queries so new workspace appears in sidebar
-		await electronQueryClient.invalidateQueries({
-			queryKey: [["workspaces"]],
-		});
+		await invalidateSidebar();
 
 		return {
 			workspaceId: newWorkspace.workspace.id,
 			projectId,
 			projectName,
-			created: true,
+			status: "created",
 		};
+	};
+
+	// GET /api/workspaces/:id/status
+	window.__workspaceStatus = async (workspaceId) => {
+		const presets =
+			await electronTrpcClient.settings.getTerminalPresets.query();
+
+		return {
+			status: "ready" as const,
+			presets: presets.map((p) => ({
+				id: p.id,
+				name: p.name,
+				commands: p.commands,
+			})),
+		};
+	};
+
+	// POST /api/workspaces/:id/run
+	window.__runInWorkspace = async (workspaceId, request) => {
+		const store = useTabsStore.getState();
+
+		// Resolve preset by name
+		const presets =
+			await electronTrpcClient.settings.getTerminalPresets.query();
+		const preset = presets.find(
+			(p) => p.name.toLowerCase() === request.preset.toLowerCase(),
+		);
+		if (!preset) {
+			throw new Error(
+				`Preset "${request.preset}" not found. Available: ${presets.map((p) => p.name).join(", ")}`,
+			);
+		}
+
+		// Create tab + pane
+		const { tabId, paneId } = store.addTab(workspaceId, {
+			initialCwd: request.cwd,
+		});
+
+		// Attach terminal
+		await electronTrpcClient.terminal.createOrAttach.mutate({
+			paneId,
+			tabId,
+			workspaceId,
+			cwd: request.cwd,
+			joinPending: true,
+		});
+
+		// Build command: env exports + preset command
+		const parts: string[] = [];
+
+		if (request.env && Object.keys(request.env).length > 0) {
+			for (const [key, value] of Object.entries(request.env)) {
+				parts.push(`export ${key}=${JSON.stringify(value)}`);
+			}
+		}
+
+		// Use preset's configured command
+		const presetCommand = preset.commands.join(" && ");
+		parts.push(presetCommand);
+
+		const fullCommand = parts.join(" && ");
+		await electronTrpcClient.terminal.write.mutate({
+			paneId,
+			data: `${fullCommand}\n`,
+			throwOnError: true,
+		});
+
+		// If a prompt is provided, wait briefly for the agent to start,
+		// then inject it as input
+		if (request.prompt) {
+			// Give the agent time to initialize and show its prompt
+			await new Promise((resolve) => setTimeout(resolve, 3000));
+
+			await electronTrpcClient.terminal.write.mutate({
+				paneId,
+				data: `${request.prompt}\n`,
+				throwOnError: true,
+			});
+		}
+
+		return { paneId, tabId, workspaceId };
 	};
 }

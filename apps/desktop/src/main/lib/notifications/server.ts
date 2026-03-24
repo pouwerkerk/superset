@@ -171,68 +171,125 @@ app.get("/auth/callback", async (req, res) => {
 </body></html>`);
 });
 
-// Workspace listing for external orchestration (e.g., Sepia/gangliad)
-app.get("/workspaces", async (_req, res) => {
-	const mainWindow = BrowserWindow.getAllWindows()[0];
-	if (!mainWindow) {
-		return res.status(500).json({
-			error: "no_window",
-			message: "No Superset window available",
+// --- Workspace API for external orchestration (e.g., Sepia/gangliad) ---
+
+function getMainWindow() {
+	const win = BrowserWindow.getAllWindows()[0];
+	if (!win) throw new Error("No Superset window available");
+	return win;
+}
+
+async function bridgeCall(method: string, ...args: unknown[]): Promise<unknown> {
+	const win = getMainWindow();
+	const argsJson = args.map((a) => JSON.stringify(a)).join(", ");
+	return win.webContents.executeJavaScript(
+		`window.${method}(${argsJson})`,
+	);
+}
+
+// GET /api/workspaces — list all workspaces
+app.get("/api/workspaces", async (_req, res) => {
+	try {
+		const result = await bridgeCall("__listWorkspaces");
+		return res.json(result);
+	} catch (err) {
+		console.error("[api] workspace list failed:", err);
+		return res.status(500).json({ error: "list_failed", message: String(err) });
+	}
+});
+
+// POST /api/workspaces — create or find a workspace for a project + branch
+app.post("/api/workspaces", async (req, res) => {
+	const { projectPath, branch, worktreePath, name } = req.body;
+
+	if (!projectPath || !branch) {
+		return res.status(400).json({
+			error: "missing_fields",
+			message: "projectPath and branch are required",
 		});
 	}
 
 	try {
-		const result = await mainWindow.webContents.executeJavaScript(
-			"window.__listWorkspaces()",
-		);
-		return res.json(result);
-	} catch (err) {
-		console.error("[notifications] workspace list failed:", err);
-		return res.status(500).json({
-			error: "list_failed",
-			message: String(err),
+		const result = await bridgeCall("__createWorkspace", {
+			projectPath,
+			branch,
+			worktreePath,
+			name,
 		});
+		return res.status(201).json(result);
+	} catch (err) {
+		console.error("[api] workspace create failed:", err);
+		return res.status(500).json({ error: "create_failed", message: String(err) });
 	}
 });
 
-// Ensure a workspace exists for a repo path + branch
+// GET /api/workspaces/:id/status — check workspace readiness and available presets
+app.get("/api/workspaces/:id/status", async (req, res) => {
+	try {
+		const result = await bridgeCall("__workspaceStatus", req.params.id);
+		return res.json(result);
+	} catch (err) {
+		console.error("[api] workspace status failed:", err);
+		return res.status(500).json({ error: "status_failed", message: String(err) });
+	}
+});
+
+// POST /api/workspaces/:id/run — run a preset in a workspace with optional prompt
+app.post("/api/workspaces/:id/run", async (req, res) => {
+	const { preset, prompt, env: extraEnv, cwd } = req.body;
+
+	if (!preset) {
+		return res.status(400).json({
+			error: "missing_fields",
+			message: "preset is required",
+		});
+	}
+
+	try {
+		const result = await bridgeCall("__runInWorkspace", req.params.id, {
+			preset,
+			prompt,
+			env: extraEnv,
+			cwd,
+		});
+		return res.status(201).json(result);
+	} catch (err) {
+		console.error("[api] workspace run failed:", err);
+		return res.status(500).json({ error: "run_failed", message: String(err) });
+	}
+});
+
+// --- Legacy endpoints (kept for backward compatibility) ---
+
+// GET /workspaces — legacy alias
+app.get("/workspaces", async (_req, res) => {
+	try {
+		const result = await bridgeCall("__listWorkspaces");
+		return res.json(result);
+	} catch (err) {
+		return res.status(500).json({ error: "list_failed", message: String(err) });
+	}
+});
+
+// POST /workspaces/ensure — legacy alias
 app.post("/workspaces/ensure", async (req, res) => {
 	const { repoPath, branch, worktreePath, name } = req.body;
-
 	if (!repoPath || !branch) {
 		return res.status(400).json({
 			error: "missing_fields",
 			message: "repoPath and branch are required",
 		});
 	}
-
-	const mainWindow = BrowserWindow.getAllWindows()[0];
-	if (!mainWindow) {
-		return res.status(500).json({
-			error: "no_window",
-			message: "No Superset window available",
-		});
-	}
-
 	try {
-		const requestJson = JSON.stringify({
-			repoPath,
+		const result = await bridgeCall("__createWorkspace", {
+			projectPath: repoPath,
 			branch,
 			worktreePath,
 			name,
 		});
-
-		const result = await mainWindow.webContents.executeJavaScript(
-			`window.__ensureWorkspace(${requestJson})`,
-		);
-
 		return res.status(201).json(result);
 	} catch (err) {
-		console.error("[notifications] workspace ensure failed:", err);
-		return res.status(500).json({
-			error: "ensure_failed",
-			message: String(err),
-		});
+		return res.status(500).json({ error: "ensure_failed", message: String(err) });
 	}
 });
 
