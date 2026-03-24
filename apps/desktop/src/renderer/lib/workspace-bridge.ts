@@ -1,4 +1,5 @@
 import { electronTrpcClient } from "renderer/lib/trpc-client";
+import { electronQueryClient } from "renderer/providers/ElectronTRPCProvider";
 
 interface WorkspaceInfo {
 	id: string;
@@ -73,6 +74,17 @@ export function setupWorkspaceBridge(): void {
 			projectId,
 		});
 
+		// Invalidate sidebar queries so the project appears immediately
+		await electronQueryClient.invalidateQueries({
+			queryKey: [["projects", "getRecents"]],
+		});
+		await electronQueryClient.invalidateQueries({
+			queryKey: [["workspaces", "getAll"]],
+		});
+		await electronQueryClient.invalidateQueries({
+			queryKey: [["workspaces", "getAllGrouped"]],
+		});
+
 		// Step 2: Check if workspace already exists for this branch
 		const allWorkspaces =
 			await electronTrpcClient.workspaces.getAll.query();
@@ -110,6 +122,11 @@ export function setupWorkspaceBridge(): void {
 					useExistingBranch: false,
 				});
 		}
+
+		// Invalidate workspace queries so new workspace appears in sidebar
+		await electronQueryClient.invalidateQueries({
+			queryKey: [["workspaces"]],
+		});
 
 		return {
 			workspaceId: newWorkspace.workspace.id,
