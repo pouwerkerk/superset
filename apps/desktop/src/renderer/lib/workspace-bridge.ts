@@ -231,15 +231,23 @@ export function setupWorkspaceBridge(): void {
 			throwOnError: true,
 		});
 
-		// If a prompt is provided, wait briefly for the agent to start,
-		// then inject it as input
+		// If a prompt is provided, wait for the agent to start,
+		// then inject it via bracketed paste so multi-line text
+		// with special characters is handled atomically.
 		if (request.prompt) {
-			// Give the agent time to initialize and show its prompt
-			await new Promise((resolve) => setTimeout(resolve, 3000));
+			// Wait for Claude Code to initialize and enable bracketed paste mode
+			await new Promise((resolve) => setTimeout(resolve, 4000));
+
+			// Bracketed paste: \x1b[200~ ... \x1b[201~ tells the terminal
+			// to treat the content as pasted text, not typed commands.
+			// Claude Code (and most modern CLI apps) handle this correctly.
+			const pasteStart = "\x1b[200~";
+			const pasteEnd = "\x1b[201~";
+			const data = `${pasteStart}${request.prompt}${pasteEnd}\n`;
 
 			await electronTrpcClient.terminal.write.mutate({
 				paneId,
-				data: `${request.prompt}\n`,
+				data,
 				throwOnError: true,
 			});
 		}
