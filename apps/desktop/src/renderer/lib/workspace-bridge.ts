@@ -16,7 +16,7 @@ interface WorkspaceInfo {
 interface CreateWorkspaceRequest {
 	projectPath: string;
 	branch: string;
-	worktreePath?: string;
+	worktreePath?: string; // External worktree path (e.g., from Cuttlefish)
 	name?: string;
 }
 
@@ -112,7 +112,13 @@ export function setupWorkspaceBridge(): void {
 		// Activate so it appears in sidebar
 		await electronTrpcClient.projects.activate.mutate({ projectId });
 
-		// Step 2: Find existing workspace for this branch
+		// Step 2: Import any external worktrees (e.g., created by Cuttlefish)
+		// This picks up worktrees that exist on disk but aren't tracked by Superset
+		await electronTrpcClient.workspaces.importAllWorktrees.mutate({
+			projectId,
+		});
+
+		// Step 3: Find existing workspace for this branch
 		const allWorkspaces =
 			await electronTrpcClient.workspaces.getAll.query();
 		const existing = allWorkspaces.find(
@@ -130,7 +136,7 @@ export function setupWorkspaceBridge(): void {
 			};
 		}
 
-		// Step 3: Create workspace
+		// Step 4: No existing workspace — create one
 		let newWorkspace;
 		try {
 			newWorkspace =
