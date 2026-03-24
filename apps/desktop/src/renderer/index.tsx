@@ -3,8 +3,10 @@ import { initSentry } from "./lib/sentry";
 initSentry();
 
 import { setupTerminalLaunchBridge } from "./lib/terminal-launch-bridge";
+import { setupWorkspaceBridge } from "./lib/workspace-bridge";
 
 setupTerminalLaunchBridge();
+setupWorkspaceBridge();
 
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import ReactDom from "react-dom/client";

@@ -291,6 +291,21 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 				return resolveDefaultEditor(input.projectId);
 			}),
 
+		activate: publicProcedure
+			.input(z.object({ projectId: z.string() }))
+			.mutation(({ input }) => {
+				const project = localDb
+					.select()
+					.from(projects)
+					.where(eq(projects.id, input.projectId))
+					.get();
+				if (!project) {
+					throw new Error(`Project ${input.projectId} not found`);
+				}
+				activateProject(project);
+				return { success: true };
+			}),
+
 		getRecents: publicProcedure.query((): Project[] => {
 			return localDb
 				.select()

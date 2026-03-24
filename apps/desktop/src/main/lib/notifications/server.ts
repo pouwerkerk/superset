@@ -171,6 +171,71 @@ app.get("/auth/callback", async (req, res) => {
 </body></html>`);
 });
 
+// Workspace listing for external orchestration (e.g., Sepia/gangliad)
+app.get("/workspaces", async (_req, res) => {
+	const mainWindow = BrowserWindow.getAllWindows()[0];
+	if (!mainWindow) {
+		return res.status(500).json({
+			error: "no_window",
+			message: "No Superset window available",
+		});
+	}
+
+	try {
+		const result = await mainWindow.webContents.executeJavaScript(
+			"window.__listWorkspaces()",
+		);
+		return res.json(result);
+	} catch (err) {
+		console.error("[notifications] workspace list failed:", err);
+		return res.status(500).json({
+			error: "list_failed",
+			message: String(err),
+		});
+	}
+});
+
+// Ensure a workspace exists for a repo path + branch
+app.post("/workspaces/ensure", async (req, res) => {
+	const { repoPath, branch, worktreePath, name } = req.body;
+
+	if (!repoPath || !branch) {
+		return res.status(400).json({
+			error: "missing_fields",
+			message: "repoPath and branch are required",
+		});
+	}
+
+	const mainWindow = BrowserWindow.getAllWindows()[0];
+	if (!mainWindow) {
+		return res.status(500).json({
+			error: "no_window",
+			message: "No Superset window available",
+		});
+	}
+
+	try {
+		const requestJson = JSON.stringify({
+			repoPath,
+			branch,
+			worktreePath,
+			name,
+		});
+
+		const result = await mainWindow.webContents.executeJavaScript(
+			`window.__ensureWorkspace(${requestJson})`,
+		);
+
+		return res.status(201).json(result);
+	} catch (err) {
+		console.error("[notifications] workspace ensure failed:", err);
+		return res.status(500).json({
+			error: "ensure_failed",
+			message: String(err),
+		});
+	}
+});
+
 // Terminal launch endpoint for external orchestration
 app.post("/terminal/launch", async (req, res) => {
 	const { command, cwd, name, workspaceId, env: extraEnv } = req.body;
