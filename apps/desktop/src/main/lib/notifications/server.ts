@@ -236,7 +236,7 @@ app.get("/api/workspaces/:id/status", async (req, res) => {
 
 // POST /api/workspaces/:id/run — run a preset in a workspace with optional prompt
 app.post("/api/workspaces/:id/run", async (req, res) => {
-	const { preset, prompt, env: extraEnv, cwd } = req.body;
+	const { preset, prompt, env: extraEnv, cwd, promptMode } = req.body;
 
 	if (!preset) {
 		return res.status(400).json({
@@ -251,6 +251,7 @@ app.post("/api/workspaces/:id/run", async (req, res) => {
 			prompt,
 			env: extraEnv,
 			cwd,
+			promptMode,
 		});
 		return res.status(201).json(result);
 	} catch (err) {

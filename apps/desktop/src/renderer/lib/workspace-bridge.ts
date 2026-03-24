@@ -37,6 +37,8 @@ interface RunInWorkspaceRequest {
 	prompt?: string;
 	env?: Record<string, string>;
 	cwd?: string;
+	/** How to deliver the prompt to the agent */
+	promptMode?: "interactive" | "file" | "flag";
 }
 
 interface RunInWorkspaceResponse {
@@ -72,6 +74,40 @@ async function invalidateSidebar(): Promise<void> {
 			queryKey: [["workspaces"]],
 		}),
 	]);
+}
+
+// --- Helpers ---
+
+/**
+ * Wait for an agent to be ready to accept input by polling the pane's
+ * terminal session. We check if the session exists and is attached,
+ * which indicates the PTY is running and Claude Code has started.
+ *
+ * Returns true if readiness was detected, false on timeout.
+ */
+async function waitForAgentReady(
+	paneId: string,
+	timeoutMs: number,
+): Promise<boolean> {
+	const start = Date.now();
+	const pollInterval = 500;
+
+	while (Date.now() - start < timeoutMs) {
+		try {
+			const session =
+				await electronTrpcClient.terminal.getSession.query(paneId);
+			// Session exists and has been running for a reasonable time
+			if (session) {
+				// Wait a bit more after session detection for Claude Code banner
+				await new Promise((resolve) => setTimeout(resolve, 2000));
+				return true;
+			}
+		} catch {
+			// Session not found yet, keep polling
+		}
+		await new Promise((resolve) => setTimeout(resolve, pollInterval));
+	}
+	return false;
 }
 
 // --- Bridge ---
@@ -211,45 +247,87 @@ export function setupWorkspaceBridge(): void {
 			joinPending: true,
 		});
 
-		// Build command: env exports + preset command
-		const parts: string[] = [];
+		const mode = request.promptMode ?? "interactive";
 
+		// Set env vars (exclude GANGLIA_PROMPT from shell export — it's too large)
+		const envParts: string[] = [];
 		if (request.env && Object.keys(request.env).length > 0) {
 			for (const [key, value] of Object.entries(request.env)) {
-				parts.push(`export ${key}=${JSON.stringify(value)}`);
+				if (key === "GANGLIA_PROMPT") continue;
+				envParts.push(`export ${key}=${JSON.stringify(value)}`);
 			}
 		}
 
-		// Use preset's configured command
-		const presetCommand = preset.commands.join(" && ");
-		parts.push(presetCommand);
+		if (mode === "file" && request.prompt) {
+			// File mode: write prompt to .superset/task.md, launch with -p "$(cat ...)"
+			const workspace =
+				await electronTrpcClient.workspaces.get.query({
+					id: workspaceId,
+				});
+			if (workspace?.worktreePath) {
+				const supersetDir = `${workspace.worktreePath}/.superset`;
+				await electronTrpcClient.filesystem.createDirectory.mutate({
+					workspaceId,
+					absolutePath: supersetDir,
+				});
+				const taskFile = `${supersetDir}/task-prompt.md`;
+				await electronTrpcClient.filesystem.writeFile.mutate({
+					workspaceId,
+					absolutePath: taskFile,
+					content: request.prompt,
+					encoding: "utf-8",
+				});
 
-		const fullCommand = parts.join(" && ");
-		await electronTrpcClient.terminal.write.mutate({
-			paneId,
-			data: `${fullCommand}\n`,
-			throwOnError: true,
-		});
-
-		// If a prompt is provided, wait for the agent to start,
-		// then inject it via bracketed paste so multi-line text
-		// with special characters is handled atomically.
-		if (request.prompt) {
-			// Wait for Claude Code to initialize and enable bracketed paste mode
-			await new Promise((resolve) => setTimeout(resolve, 4000));
-
-			// Bracketed paste: \x1b[200~ ... \x1b[201~ tells the terminal
-			// to treat the content as pasted text, not typed commands.
-			// Claude Code (and most modern CLI apps) handle this correctly.
-			const pasteStart = "\x1b[200~";
-			const pasteEnd = "\x1b[201~";
-			const data = `${pasteStart}${request.prompt}${pasteEnd}\n`;
-
+				const presetCommand = preset.commands[0] ?? "claude --dangerously-skip-permissions";
+				const fileCommand = `${presetCommand} -p "$(cat '.superset/task-prompt.md')"`;
+				const parts = [...envParts, fileCommand];
+				await electronTrpcClient.terminal.write.mutate({
+					paneId,
+					data: `${parts.join(" && ")}\n`,
+					throwOnError: true,
+				});
+			}
+		} else if (mode === "flag" && request.prompt) {
+			// Flag mode: pass prompt directly via -p flag (heredoc for safety)
+			const delimiter = "GANGLIA_PROMPT_END";
+			const presetCommand = preset.commands[0] ?? "claude --dangerously-skip-permissions";
+			const heredocCommand = `${presetCommand} -p "$(cat <<'${delimiter}'\n${request.prompt}\n${delimiter}\n)"`;
+			const parts = [...envParts, heredocCommand];
 			await electronTrpcClient.terminal.write.mutate({
 				paneId,
-				data,
+				data: `${parts.join(" && ")}\n`,
 				throwOnError: true,
 			});
+		} else {
+			// Interactive mode: launch preset, wait for agent readiness, paste prompt
+			const presetCommand = preset.commands.join(" && ");
+			const parts = [...envParts, presetCommand];
+			await electronTrpcClient.terminal.write.mutate({
+				paneId,
+				data: `${parts.join(" && ")}\n`,
+				throwOnError: true,
+			});
+
+			if (request.prompt) {
+				// Wait for Claude Code to initialize.
+				// Poll pane status: once a hook fires (Start/Stop), Claude is responsive.
+				// Fallback: 5 second timeout.
+				const paneReady = await waitForAgentReady(paneId, 8000);
+				if (!paneReady) {
+					console.warn(
+						"[workspace-bridge] Agent readiness timeout — injecting prompt anyway",
+					);
+				}
+
+				// Inject via bracketed paste for clean multi-line handling
+				const pasteStart = "\x1b[200~";
+				const pasteEnd = "\x1b[201~";
+				await electronTrpcClient.terminal.write.mutate({
+					paneId,
+					data: `${pasteStart}${request.prompt}${pasteEnd}\n`,
+					throwOnError: true,
+				});
+			}
 		}
 
 		return { paneId, tabId, workspaceId };
